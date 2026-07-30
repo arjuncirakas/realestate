@@ -906,9 +906,14 @@ Define reusable roles in `.claude/agents/` as markdown with YAML frontmatter. A 
 
 Recommended roles:
 
-- `backend-module-builder` — one Express module per teammate, per 9.2
-- `frontend-feature-builder` — one feature folder per teammate, per 9.3
+- `backend-module-builder` — one Express module per teammate, per 9.2 (builder)
+- `frontend-feature-builder` — one feature folder per teammate, per 9.3 (builder)
 - `contract-guardian` — read-only reviewer that checks every response shape against its contract schema and flags drift
+- `security-reviewer` — read-only security audit (auth, injection, uploads, secrets, leakage)
+- `performance-reviewer` — read-only performance audit (queries, indexes, Maps cost, render cost)
+- `code-quality-reviewer` — read-only audit of layering, conventions, test quality, and hygiene
+
+The first two are builders. The last four are read-only reviewers, run as a parallel review team after each build wave.
 
 ### 14.4 Spawn prompt template
 

@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: estate-postgis
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: estate
+      POSTGRES_PASSWORD: estate
+      POSTGRES_DB: estate_dev
+      # Keeps initdb collation deterministic across developer machines.
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    ports:
+      # Host 5433 rather than the 5432 in Section 8.3: this developer machine
+      # already publishes another Postgres on 5432. The container port is
+      # unchanged, so DATABASE_URL is the only other place that differs.
+      - '5433:5432'
+    volumes:
+      - estate_db_data:/var/lib/postgresql/data
+      # Runs only on first initialisation of an empty data volume. Migrations
+      # re-create the extensions too, so a pre-existing volume still works.
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U estate -d estate_dev']
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+volumes:
+  estate_db_data:

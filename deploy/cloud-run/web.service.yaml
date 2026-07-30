@@ -1,0 +1,50 @@
+# Cloud Run service for the Estate Platform web front end (nginx serving the
+# Vite build).
+#
+#   gcloud run services replace deploy/cloud-run/web.service.yaml --region=asia-south1
+#
+# Note there are no VITE_* variables here. Vite inlines them at build time, so
+# they are build arguments on the image (see frontend/Dockerfile) — setting them
+# on the service would have no effect.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: estate-web
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        # Static files with no database behind them; scale freely and let
+        # instances idle to zero.
+        autoscaling.knative.dev/minScale: '0'
+        autoscaling.knative.dev/maxScale: '20'
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      # nginx serving fingerprinted static assets handles far more than the API
+      # per instance.
+      containerConcurrency: 250
+      timeoutSeconds: 30
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT_ID/estate/web:IMAGE_TAG
+          ports:
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: '1'
+              memory: 256Mi
+          env:
+            # Consumed by envsubst in the nginx template at container start.
+            - name: PORT
+              value: '8080'
+          startupProbe:
+            httpGet:
+              path: /index.html
+            initialDelaySeconds: 1
+            periodSeconds: 2
+            failureThreshold: 10
+  traffic:
+    - percent: 100
+      latestRevision: true

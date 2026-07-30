@@ -1,0 +1,19 @@
+# Root build context, used by frontend/Dockerfile (which needs backend
+# contracts). Keep this tight — everything not excluded is uploaded to the
+# daemon on every build.
+.git
+.github
+node_modules
+**/node_modules
+**/dist
+**/coverage
+backend/uploads
+backend/prisma/migrations
+docs
+docker
+docker-compose.yml
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+.claude

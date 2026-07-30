@@ -1,0 +1,116 @@
+# Cloud Run service for the Estate Platform API.
+#
+#   gcloud run services replace deploy/cloud-run/api.service.yaml --region=asia-south1
+#
+# Placeholders to substitute before applying: PROJECT_ID, REGION, INSTANCE
+# (Cloud SQL instance name), IMAGE_TAG.
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: estate-api
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        # Attaches the Cloud SQL instance over the unix socket at
+        # /cloudsql/<connection-name>. No public IP, no proxy sidecar to run.
+        run.googleapis.com/cloudsql-instances: PROJECT_ID:REGION:INSTANCE
+
+        # Postgres connections are the scarce resource, not CPU. Each instance
+        # holds a Prisma pool, so instance count multiplies connections —
+        # maxScale x pool size must stay under the Cloud SQL connection limit.
+        autoscaling.knative.dev/minScale: '0'
+        autoscaling.knative.dev/maxScale: '10'
+
+        # Keeps the CPU allocated between requests so the pool is not torn down
+        # and rebuilt on every cold path.
+        run.googleapis.com/cpu-throttling: 'false'
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      # 80 concurrent requests per instance against a pool that defaults to
+      # roughly num_cpus*2+1 connections. Raise deliberately, with the Cloud SQL
+      # ceiling in mind.
+      containerConcurrency: 80
+      timeoutSeconds: 60
+      serviceAccountName: estate-api@PROJECT_ID.iam.gserviceaccount.com
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT_ID/estate/api:IMAGE_TAG
+          ports:
+            # Must match what the app listens on. Cloud Run also injects PORT,
+            # which env.js reads.
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: '1'
+              memory: 512Mi
+          env:
+            - name: NODE_ENV
+              value: production
+
+            # Unix socket, not host:port — the socket path is what the
+            # cloudsql-instances annotation above mounts.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: estate-database-url
+                  key: latest
+
+            - name: JWT_ACCESS_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: estate-jwt-access-secret
+                  key: latest
+            - name: JWT_REFRESH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: estate-jwt-refresh-secret
+                  key: latest
+
+            - name: ACCESS_TOKEN_TTL
+              value: 15m
+            - name: REFRESH_TOKEN_TTL_DAYS
+              value: '30'
+
+            # Exact origin of the web service. Never '*' — the refresh cookie is
+            # sent with credentials, and a wildcard origin would be rejected by
+            # the browser anyway.
+            - name: CORS_ORIGIN
+              value: https://estate.example.com
+
+            # Section 2.5: the GCS driver in production. storage.js imports
+            # services/storage-gcs.js dynamically when this is 'gcs', so the SDK
+            # is never loaded in development.
+            - name: STORAGE_DRIVER
+              value: gcs
+            - name: GCS_BUCKET
+              value: estate-media-PROJECT_ID
+            - name: GCS_PROJECT_ID
+              value: PROJECT_ID
+
+            # Server-side geocoding key (Section 7.3) — a different, unrestricted
+            # key from the referrer-restricted one the browser uses.
+            - name: GEOCODING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: estate-geocoding-api-key
+                  key: latest
+
+            - name: LOG_LEVEL
+              value: info
+          startupProbe:
+            httpGet:
+              path: /health
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+            periodSeconds: 30
+            timeoutSeconds: 3
+  traffic:
+    - percent: 100
+      latestRevision: true

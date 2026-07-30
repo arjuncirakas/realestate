@@ -1,0 +1,11 @@
+node_modules
+coverage
+uploads
+.env
+.env.*
+!.env.example
+Dockerfile
+.dockerignore
+*.log
+**/*.test.js
+tests

@@ -1,0 +1,363 @@
+// Estate Platform database schema — implements docs/PROJECT_REQUIREMENTS.md Section 4.
+//
+// Things Prisma cannot express live in the raw-SQL migration
+// `20260730000300_geo_trigger_and_indexes` instead: the lat/lng -> location
+// sync trigger, the GIST indexes on the geography columns, and the partial
+// unique index enforcing one cover image per property. See prisma/README.md
+// before regenerating a migration — Prisma does not know about those objects
+// and a generated migration must never be allowed to drop them.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums (Section 4.1) — mirrored in src/contracts/enums.js
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  SUBSCRIBER
+  AGENT
+  ADMIN
+}
+
+enum PropertyType {
+  PLOT
+  HOUSE
+  APARTMENT
+  COMMERCIAL
+  FARMLAND
+}
+
+enum PropertyStatus {
+  DRAFT
+  AVAILABLE
+  UNDER_OFFER
+  SOLD
+  WITHDRAWN
+}
+
+enum AreaUnit {
+  SQFT
+  SQM
+  CENT
+  ACRE
+  HECTARE
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+  DOCUMENT
+  TOUR_360
+}
+
+enum EnquiryStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  CLOSED
+}
+
+enum VisitStatus {
+  REQUESTED
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum InterestStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  WITHDRAWN
+  CLOSED
+}
+
+enum LogType {
+  INSPECTION
+  MAINTENANCE
+  TAX
+  LEGAL
+  BOUNDARY
+  OTHER
+}
+
+enum VisitSlot {
+  MORNING
+  AFTERNOON
+  EVENING
+}
+
+// ---------------------------------------------------------------------------
+// Tables (Section 4.2)
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String   @unique @db.Citext
+  phone        String?  @db.VarChar(20)
+  passwordHash String   @map("password_hash")
+  fullName     String   @map("full_name") @db.VarChar(120)
+  role         UserRole @default(SUBSCRIBER)
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  listedProperties  Property[]             @relation("PropertyListedByAgent")
+  enquiries         Enquiry[]              @relation("EnquiryRaisedByUser")
+  assignedEnquiries Enquiry[]              @relation("EnquiryAssignedAgent")
+  siteVisits        SiteVisit[]
+  savedProperties   SavedProperty[]
+  interests         InterestRegistration[]
+  ownerships        Ownership[]
+  managementLogs    ManagementLog[]
+  refreshTokens     RefreshToken[]
+
+  @@index([role])
+  @@map("users")
+}
+
+model Property {
+  id                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug              String         @unique @db.VarChar(160)
+  title             String         @db.VarChar(160)
+  description       String?
+  propertyType      PropertyType   @map("property_type")
+  status            PropertyStatus @default(DRAFT)
+  price             Decimal        @db.Decimal(14, 2)
+  priceIsNegotiable Boolean        @default(false) @map("price_is_negotiable")
+  areaValue         Decimal        @map("area_value") @db.Decimal(12, 2)
+  areaUnit          AreaUnit       @map("area_unit")
+  addressLine       String?        @map("address_line") @db.VarChar(255)
+  locality          String?        @db.VarChar(120)
+  city              String         @db.VarChar(120)
+  district          String?        @db.VarChar(120)
+  state             String         @db.VarChar(120)
+  pincode           String?        @db.VarChar(10)
+  latitude          Float
+  longitude         Float
+
+  // Derived from latitude/longitude by a database trigger. Application code
+  // writes lat/lng only (Section 4.3) and reads these through $queryRaw.
+  location Unsupported("geography(Point, 4326)")?
+  boundary Unsupported("geography(Polygon, 4326)")?
+
+  surveyNumber      String?   @map("survey_number") @db.VarChar(80)
+  amenities         Json      @default("[]")
+  isGroupPurchase   Boolean   @default(false) @map("is_group_purchase")
+  groupTargetAmount Decimal?  @map("group_target_amount") @db.Decimal(14, 2)
+  groupMinTicket    Decimal?  @map("group_min_ticket") @db.Decimal(14, 2)
+  listedByAgentId   String?   @map("listed_by_agent_id") @db.Uuid
+  viewCount         Int       @default(0) @map("view_count")
+  publishedAt       DateTime? @map("published_at") @db.Timestamptz(6)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  listedByAgent User?                  @relation("PropertyListedByAgent", fields: [listedByAgentId], references: [id], onDelete: SetNull)
+  media         PropertyMedia[]
+  enquiries     Enquiry[]
+  siteVisits    SiteVisit[]
+  savedBy       SavedProperty[]
+  interests     InterestRegistration[]
+  ownerships    Ownership[]
+  logs          ManagementLog[]
+  snapshots     PlotSnapshot[]
+
+  @@index([status])
+  @@index([city])
+  @@index([propertyType])
+  @@index([price])
+  @@index([isGroupPurchase])
+  @@index([listedByAgentId])
+  @@index([status, publishedAt(sort: Desc)])
+  @@map("properties")
+}
+
+model PropertyMedia {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  propertyId String    @map("property_id") @db.Uuid
+  type       MediaType
+  storageKey String    @map("storage_key")
+  url        String
+  caption    String?   @db.VarChar(255)
+  sortOrder  Int       @default(0) @map("sort_order")
+  isCover    Boolean   @default(false) @map("is_cover")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, sortOrder])
+  @@map("property_media")
+}
+
+model Enquiry {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  propertyId      String        @map("property_id") @db.Uuid
+  userId          String?       @map("user_id") @db.Uuid
+  name            String        @db.VarChar(120)
+  email           String        @db.Citext
+  phone           String?       @db.VarChar(20)
+  message         String
+  status          EnquiryStatus @default(NEW)
+  assignedAgentId String?       @map("assigned_agent_id") @db.Uuid
+  agentNotes      String?       @map("agent_notes")
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property      Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  user          User?    @relation("EnquiryRaisedByUser", fields: [userId], references: [id], onDelete: SetNull)
+  assignedAgent User?    @relation("EnquiryAssignedAgent", fields: [assignedAgentId], references: [id], onDelete: SetNull)
+
+  @@index([propertyId])
+  @@index([userId])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("enquiries")
+}
+
+model SiteVisit {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  propertyId    String      @map("property_id") @db.Uuid
+  userId        String      @map("user_id") @db.Uuid
+  preferredDate DateTime    @map("preferred_date") @db.Date
+  preferredSlot VisitSlot   @map("preferred_slot")
+  contactPhone  String?     @map("contact_phone") @db.VarChar(20)
+  status        VisitStatus @default(REQUESTED)
+  confirmedAt   DateTime?   @map("confirmed_at") @db.Timestamptz(6)
+  agentNotes    String?     @map("agent_notes")
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId])
+  @@index([userId])
+  @@index([status, preferredDate])
+  @@map("site_visits")
+}
+
+model SavedProperty {
+  userId     String   @map("user_id") @db.Uuid
+  propertyId String   @map("property_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@id([userId, propertyId])
+  @@index([propertyId])
+  @@map("saved_properties")
+}
+
+model InterestRegistration {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  propertyId       String         @map("property_id") @db.Uuid
+  userId           String         @map("user_id") @db.Uuid
+  indicativeAmount Decimal?       @map("indicative_amount") @db.Decimal(14, 2)
+  notes            String?
+  status           InterestStatus @default(NEW)
+  agentNotes       String?        @map("agent_notes")
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // One registration per person per property (Section 4.2).
+  @@unique([propertyId, userId])
+  @@index([userId])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("interest_registrations")
+}
+
+model Ownership {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  propertyId      String    @map("property_id") @db.Uuid
+  ownerUserId     String    @map("owner_user_id") @db.Uuid
+  sharePercentage Decimal   @default(100.00) @map("share_percentage") @db.Decimal(5, 2)
+  registeredOn    DateTime? @map("registered_on") @db.Date
+  documentRef     String?   @map("document_ref") @db.VarChar(120)
+  notes           String?
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property  Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  ownerUser User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  // The 100% cap across a property is an application-level rule (Section 4.2);
+  // this only stops the same owner being recorded twice on one property.
+  @@unique([propertyId, ownerUserId])
+  @@index([ownerUserId])
+  @@map("ownerships")
+}
+
+model ManagementLog {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  propertyId       String   @map("property_id") @db.Uuid
+  agentId          String   @map("agent_id") @db.Uuid
+  logType          LogType  @map("log_type")
+  title            String   @db.VarChar(160)
+  notes            String?
+  occurredOn       DateTime @map("occurred_on") @db.Date
+  isVisibleToOwner Boolean  @default(true) @map("is_visible_to_owner")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  property Property             @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  agent    User                 @relation(fields: [agentId], references: [id], onDelete: Restrict)
+  media    ManagementLogMedia[]
+
+  @@index([propertyId, occurredOn(sort: Desc)])
+  @@index([agentId])
+  @@map("management_logs")
+}
+
+model ManagementLogMedia {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  logId      String   @map("log_id") @db.Uuid
+  storageKey String   @map("storage_key")
+  url        String
+  caption    String?  @db.VarChar(255)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  log ManagementLog @relation(fields: [logId], references: [id], onDelete: Cascade)
+
+  @@index([logId])
+  @@map("management_log_media")
+}
+
+model PlotSnapshot {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  propertyId String   @map("property_id") @db.Uuid
+  capturedAt DateTime @map("captured_at") @db.Timestamptz(6)
+  storageKey String   @map("storage_key")
+  url        String
+  source     String   @default("MANUAL") @db.VarChar(40)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  property Property @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, capturedAt(sort: Desc)])
+  @@map("plot_snapshots")
+}
+
+model RefreshToken {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}

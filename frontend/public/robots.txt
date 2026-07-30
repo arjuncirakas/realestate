@@ -1,0 +1,20 @@
+# Estate Platform.
+#
+# Without this file the SPA fallback serves index.html for /robots.txt, and a
+# crawler parses HTML as directives — which is what Lighthouse reported as
+# "robots.txt is not valid, 14 errors found".
+
+User-agent: *
+
+# Public catalogue and group-purchase pages are meant to be indexed.
+Allow: /
+
+# Signed-in areas. These are already behind authentication, so this is about
+# keeping them out of an index rather than about access control.
+Disallow: /dashboard
+Disallow: /admin
+Disallow: /login
+Disallow: /register
+
+# Add the production host before launch:
+# Sitemap: https://estate.example.com/sitemap.xml

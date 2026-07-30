@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: lint, test, contracts
+    runs-on: ubuntu-latest
+
+    services:
+      # The backend suite is not mocked — integration tests run against a real
+      # database through supertest, and the geo tests need PostGIS specifically.
+      # A plain postgres image would fail on the first `geography` column.
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: estate
+          POSTGRES_PASSWORD: estate
+          POSTGRES_DB: estate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U estate -d estate_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://estate:estate@localhost:5432/estate_test
+      # Test-only values. Real secrets never reach CI — deploys read them from
+      # Secret Manager (docs/DEPLOYMENT.md).
+      JWT_ACCESS_SECRET: ci-access-secret-at-least-32-characters
+      JWT_REFRESH_SECRET: ci-refresh-secret-at-least-32-characters
+      ACCESS_TOKEN_TTL: 15m
+      REFRESH_TOKEN_TTL_DAYS: 30
+      CORS_ORIGIN: http://localhost:5173
+      STORAGE_DRIVER: local
+      LOCAL_STORAGE_PATH: ./uploads
+      LOG_LEVEL: silent
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      # The root postinstall runs sync-contracts, so frontend/src/contracts —
+      # which is gitignored and absent from a fresh checkout — exists before
+      # anything tries to import it.
+      - name: Install root
+        run: npm ci
+
+      - name: Install backend
+        run: npm --prefix backend ci
+
+      - name: Install frontend
+        run: npm --prefix frontend ci
+
+      # Runs before lint/test: a contract drift makes every downstream failure
+      # noise, so fail fast with the real cause.
+      - name: contracts:check
+        run: npm run contracts:check
+
+      - name: Apply migrations
+        run: npm --prefix backend run db:deploy
+
+      # Integration tests assert against seeded fixtures — specific slugs,
+      # accounts and the 40/60 co-ownership case — so the seed is required, not
+      # a convenience.
+      - name: Seed database
+        run: npm --prefix backend run db:seed
+
+      - name: Lint backend
+        run: npm --prefix backend run lint
+
+      - name: Lint frontend
+        run: npm --prefix frontend run lint
+
+      - name: Test backend
+        run: npm --prefix backend test
+
+      - name: Test frontend
+        run: npm --prefix frontend test
+
+      # Catches anything that type-checks in dev but breaks a production build,
+      # and proves the Vite build works with no Maps key configured.
+      - name: Build frontend
+        run: npm --prefix frontend run build
+        env:
+          VITE_API_BASE_URL: http://localhost:4000/api/v1
+
+  images:
+    name: docker build
+    runs-on: ubuntu-latest
+    # No point building images for a tree that does not pass its own gates.
+    needs: verify
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build API image
+        run: docker build -f backend/Dockerfile -t estate-api:ci backend
+
+      # Built from the repository root on purpose: the web image regenerates
+      # frontend/src/contracts from backend/src/contracts during its build.
+      - name: Build web image
+        run: |
+          docker build -f frontend/Dockerfile -t estate-web:ci \
+            --build-arg VITE_API_BASE_URL=https://api.example.invalid/api/v1 .
